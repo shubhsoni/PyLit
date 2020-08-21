@@ -8,15 +8,12 @@ from pycaret.datasets import get_data
 import io
 import shap
 st.set_option('deprecation.showfileUploaderEncoding', False)
+from src.models.strm_function import *
 
 st.title('Modeling App')
 
 st.sidebar.subheader('Step1: Load data')
 select_data = st.sidebar.radio('Select data', ('Use dummy data', 'Browse'))
-
-@st.cache()
-def use_dummy_data():
-    return get_data('diamond', verbose=False)
 
 if select_data == 'Use dummy data':
     dataset = use_dummy_data()
@@ -31,37 +28,10 @@ if st.sidebar.checkbox('Display data snapshot'):
 'Data shape: ',dataset.shape
 
 '''## Generate descriptive report of data'''
-@st.cache(allow_output_mutation=True, suppress_st_warning=True)
-def gen_pandas_profile(dataset):
-    #time.sleep(1)
-    return ProfileReport(dataset)
-
 if st.checkbox('Generate report'):
     st_profile_report(gen_pandas_profile(dataset))
     
-
 st.sidebar.subheader('Step 2: Select test data fraction')
-# split train test data
-@st.cache(allow_output_mutation=True, suppress_st_warning=True)
-def split_train_test(data, test_perc = 33, random_state = 42):
-    '''Split data into training and testing datasets... validation data will be used from train 
-    data itself during modeling.
-    keep target variable intact in the data, setup method will automaticaly treat
-    feature and target variables separately by specifying target name.
-    
-    param data: (pandas df) dataset
-    param test_perc: (float) percentage of data to be used for testing
-    param random_state: (int) (optional) set seed for reproducible split
-    returns: (tuple) train_data and test_data '''
-    #time.sleep(1)
-    train_perc = (100 - test_perc)/100
-    train_data = data.sample(frac=train_perc, random_state=random_state).reset_index(drop=True)
-    test_data = data.drop(train_data.index).reset_index(drop=True)
-
-    # print('Data for Modeling: ' + str(train_data.shape))
-    # print('Unseen Data For Predictions ' + str(test_data.shape))
-    return train_data, test_data
-
 
 '''## Train test split'''
 test_perc = st.sidebar.slider('testing data percentage:', 10, 33)#, format='%')
@@ -154,83 +124,73 @@ else:
              'bin_numeric_features' : None #['Carat Weight']
              }
 
-#               'ID          Name      '
-#               '--------    ----------'     
-model_library = {'lr'       : 'Linear Regression',                   
-                'lasso'    : 'Lasso Regression'   ,             
-                'ridge'    : 'Ridge Regression '   ,            
-                'en'       : 'Elastic Net'          ,         
-                'lar'      : 'Least Angle Regression',                  
-                'llar'     : 'Lasso Least Angle Regression',                   
-                'omp'      : 'Orthogonal Matching Pursuit' ,                    
-                'br'       : 'Bayesian Ridge'              ,    
-                'ard'      : 'Automatic Relevance Determination',                  
-                'par'      : 'Passive Aggressive Regressor'     ,              
-                'ransac'   : 'Random Sample Consensus'      ,
-                'tr'       : 'TheilSen Regressor'            ,      
-                'huber'    : 'Huber Regressor'                 ,              
-                'kr'       : 'Kernel Ridge'                ,                    
-                'svm'      : 'Support Vector Machine'   ,                        
-                'knn'      : 'K Neighbors Regressor'  ,                        
-                'dt'       : 'Decision Tree'     ,                               
-                'rf'       : 'Random Forest'    ,                               
-                'et'       : 'Extra Trees Regressor' ,                           
-                'ada'      : 'AdaBoost Regressor' ,                            
-                'gbr'      : 'Gradient Boosting Regressor' ,                              
-                'mlp'      : 'Multi Level Perceptron',                         
-                'xgboost'  : 'Extreme Gradient Boosting' ,                  
-                'lightgbm' : 'Light Gradient Boosting' ,                   
-                'catboost' : 'CatBoost Regressor' , 
-                }
+model_library = model_library_()
 model_library_option = [m[1].strip() for m in model_library.items()]
+plot_library = plot_library_()
+plot_library_option = [p[1].strip() for p in plot_library.items()]
 
 setupready = False
 model_radio = None
 confirm = False
 
-modeling_trial = st.radio('Modeling trial: ',('Create base model', 'Tune selected model'))
+
+type_list = ['summary', 'correlation', 'reason']
+
+'''## Create Model(s)'''
+modeling_trial = st.radio('',('Create base model', 'Tune selected model'))
 if modeling_trial=='Create base model':
     model_radio = st.checkbox('Build all available models')
     if model_radio:
         if st.button('Train models'):
             with st.spinner('Running setup.'):
-                pr.setup(**setup_dict, silent = True, verbose=False)
+                run_setup(**setup_dict)
+            time.sleep(3)
             st.success('Setup completed succesfully.')
             with st.spinner('Training models...'):
-                bestmodels = pr.compare_models(verbose=False)
+                bestmodels = compare_model_fn()
             results = pr.pull()
             modellist = results.Model.tolist()
+            st.text('Training results: 10-fold CV')
             st.write(results)
-
-            # st.write('Training selected models:', model_to_build)
-            # results = pr.compare_models(whitelist=model_to_build)
-            # st.write(results)
+            if modellist:
+                showplot = st.selectbox('Show plot for :', modellist)
+            if showplot:
+                plot_to_show = st.selectbox('Choose plot type:', plot_library_option)
+                with st.spinner('Generating plot...'):
+                    plot_to_show = [k for k,v in list(plot_library.items()) if v in plot_to_show]
+                    if plot_to_show:
+                        typ = st.selectbox('Choose plot type:',type_list)
+                        if typ=='correlation':
+                            feat = st.selectbox('Choose feature for correlation plot',train_data.columns)
+                        else:
+                            feat = None
+                        with st.spinner('Generating plot...'):
+                            interpret_model_fn(modellist,bestmodels,plottype=plot_to_show[0],feature=feat)
+                            st.pyplot()
+                        st.succes('Success.')
     else:
         model_to_build = st.multiselect('Select models to build:', model_library_option)
         if model_to_build:
             if isinstance(model_to_build, list):
                 model_to_build_ = [k for k,v in list(model_library.items()) if v in model_to_build]
                 with st.spinner('Running setup.'):
-                    pr.setup(**setup_dict, silent = True, verbose=False)
+                    run_setup(**setup_dict)
                 st.success('Setup completed succesfully.')
                 with st.spinner('Training models...'):
-                    bestmodels = pr.compare_models(whitelist=model_to_build_,  verbose=False)
+                    bestmodels = compare_model_fn(whitelist=model_to_build_)
                 results = pr.pull()
                 modellist = results.Model.tolist()
-                st.text('Training results:')
+                st.text('Training results: average measures from 10-fold CV')
                 st.write(results)
-                showplot = st.selectbox('Show plot for :', modellist)
+                if modellist:
+                    showplot = st.selectbox('Show plot for :', modellist)
                 if showplot:
-                    if 'catboost' in str(type(bestmodels)):
-                        pr.interpret_model(bestmodels)
+                    plot_to_show = st.selectbox('Choose plot type:', plot_library_option)
+                    with st.spinner('Generating plot...'):
+                        plot_to_show = [k for k,v in list(plot_library.items()) if v in plot_to_show]
+                        interpret_model_fn(modellist,bestmodels,plottype=plot_to_show[0])
                         st.pyplot()
-                    else:
-                        if isinstance(bestmodels, list):
-                            clf = bestmodels[modellist.index(showplot)]
-                        else:
-                            clf = bestmodels
-                        pr.plot_model(clf, verbose=False)
-                        st.pyplot()
+                    st.success('Success.')
 
 if modeling_trial == 'Tune selected model':
     model_to_tune = st.selectbox('Select model to tune:', model_library_option)
@@ -238,15 +198,20 @@ if modeling_trial == 'Tune selected model':
         with st.spinner('Creating base model:'):
             if isinstance(model_to_tune, str):
                 model_to_tune_ = [k for k,v in list(model_library.items()) if v in model_to_tune]
-                base_model = pr.create_model(model_to_tune_[0], verbose=False)
+                base_model = base_model_fn(model_to_tune_[0])
         with st.spinner('Tuning hyper-parameter of base model'):
-            tm = pr.tune_model(base_model, verbose=False)
+            tm = tune_model_fn(base_model)
             results = pr.pull()
-            if 'catboost' in str(type(tm)):
-                pr.interpret_model(tm)
-                st.pyplot()
-            else:
-                pr.plot_model(tm, verbose=False)
-                st.pyplot()
+            st.write('Tuning results: 10-fold CV', model_to_tune)
             st.write(results)
+        plot_to_show = st.selectbox('Choose plot type:', plot_library_option)
+        with st.spinner('Generating plot...'):
+            plot_to_show = [k for k,v in list(plot_library.items()) if v in plot_to_show]
+            interpret_model_fn(bestmodels=tm, plottype=plot_to_show[0])
+            st.pyplot()
+        st.success('Success.')            
             
+
+
+
+# print_log()
